@@ -176,7 +176,19 @@ morse_override_hostapd_set_bss_options() {
 			wps_not_configured=1
 		;;
 		psk|sae|psk-sae)
-			json_get_vars key wpa_psk_file
+			local mm_sae_password_url dynamic_sae_source
+			json_get_vars key wpa_psk_file mm_sae_password_url
+			if [ -z "$mm_sae_password_url" ] && [ "$auth_type" != "psk" ]; then
+				json_get_values network network
+				for net in $network; do
+					mm_sae_password_url="$(uci -q get network.$net.mm_sae_password_url)"
+					[ -n "$mm_sae_password_url" ] && break
+				done
+			fi
+			dynamic_sae_source="$mm_sae_password_url"
+			if [ -n "$mm_sae_password_url" ] && [ "$auth_type" != "psk" ]; then
+				append bss_conf "mm_sae_password_url=$mm_sae_password_url" "$N"
+			fi
 			if [ "$auth_type" = "psk" ] && [ "$ppsk" -ne 0 ] ; then
 				json_get_vars auth_secret auth_port
 				set_default auth_port 1812
@@ -189,11 +201,11 @@ morse_override_hostapd_set_bss_options() {
 				append bss_conf "wpa_passphrase=$key" "$N"
 				# Workaround for SW-12231 (dpp hostapd_s1g bug)
 				append bss_conf "sae_password=${key}" "$N"
-			elif [ -n "$key" ] || [ -z "$wpa_psk_file" ]; then
+			elif [ -n "$key" ] || { [ -z "$wpa_psk_file" ] && { [ "$auth_type" = "psk" ] || [ -z "$dynamic_sae_source" ]; }; }; then
 				wireless_setup_vif_failed INVALID_WPA_PSK
 				return 1
 			fi
-			[ -z "$wpa_psk_file" ] && set_default wpa_psk_file /var/run/hostapd-$ifname.psk
+			[ -z "$wpa_psk_file" ] && { [ "$auth_type" = "psk" ] || [ -z "$dynamic_sae_source" ]; } && set_default wpa_psk_file /var/run/hostapd-$ifname.psk
 			[ -n "$wpa_psk_file" ] && {
 				[ -e "$wpa_psk_file" ] || touch "$wpa_psk_file"
 				append bss_conf "wpa_psk_file=$wpa_psk_file" "$N"
@@ -757,7 +769,7 @@ morse_override_wpa_supplicant_add_network() {
 		basic_rate mcast_rate \
 		ieee80211w ieee80211r fils ocv \
 		multi_ap dpp \
-		beacon_int
+		beacon_int mm_sae_password_url
 
 	# Note that owe_group is a list in UCI, but the wpa supplicant conf file
 	# (unlike the hostapd one!) expects a single group rather than a list
@@ -822,6 +834,13 @@ morse_override_wpa_supplicant_add_network() {
 	[ "$_w_mode" = "mesh" ] && {
 		json_get_vars mesh_id encryption
 		[ -n "$mesh_id" ] && ssid="${mesh_id}"
+		if [ -z "$mm_sae_password_url" ]; then
+			json_get_values network network
+			for net in $network; do
+				mm_sae_password_url="$(uci -q get network.$net.mm_sae_password_url)"
+				[ -n "$mm_sae_password_url" ] && break
+			done
+		fi
 		[ -n "$mesh_max_peer_links" ] && append mesh_data "max_peer_links=${mesh_max_peer_links}" "$N"
 		[ -n "$mesh_plink_timeout" ] && append mesh_data "mesh_max_inactivity=${mesh_plink_timeout}" "$N"
 		[ -n "$mesh_fwding" ] && append mesh_data "mesh_fwding=${mesh_fwding}" "$N"
@@ -847,6 +866,7 @@ morse_override_wpa_supplicant_add_network() {
 		[ -n "$mesh_dynamic_peering" ] && append network_data "mesh_dynamic_peering=${mesh_dynamic_peering}" "$N$T"
 		[ -n "$mesh_rssi_margin" ] && append network_data "mesh_rssi_margin=${mesh_rssi_margin}" "$N$T"
 		[ -n "$mesh_blacklist_timeout" ] && append network_data "mesh_blacklist_timeout=${mesh_blacklist_timeout}" "$N$T"
+		[ -n "$mm_sae_password_url" ] && append network_data "mm_sae_password_url=$mm_sae_password_url" "$N$T"
 
 		[ "$encryption" = "none" -o -z "$encryption" ] || append wpa_key_mgmt "SAE"
 		scan_ssid=""
@@ -885,7 +905,11 @@ morse_override_wpa_supplicant_add_network() {
 			key_mgmt="$wpa_key_mgmt"
 
 			if [ "$_w_mode" = "mesh" ] || [ "$auth_type" = "sae" ]; then
-				passphrase="sae_password=\"${key}\""
+				if [ "$_w_mode" = "mesh" ] && [ -n "$mm_sae_password_url" ] && [ -z "$key" ]; then
+					passphrase=""
+				else
+					passphrase="sae_password=\"${key}\""
+				fi
 			else
 				if [ ${#key} -eq 64 ]; then
 					passphrase="psk=${key}"
@@ -893,7 +917,7 @@ morse_override_wpa_supplicant_add_network() {
 					passphrase="psk=\"${key}\""
 				fi
 			fi
-			append network_data "$passphrase" "$N$T"
+			[ -n "$passphrase" ] && append network_data "$passphrase" "$N$T"
 		;;
 		eap|eap2|eap192)
 			hostapd_append_wpa_key_mgmt

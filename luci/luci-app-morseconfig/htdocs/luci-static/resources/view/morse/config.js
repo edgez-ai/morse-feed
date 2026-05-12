@@ -919,6 +919,16 @@ return view.extend({
 			uci.unset('wireless', section_id, 'key3');
 			uci.unset('wireless', section_id, 'key4');
 		};
+
+		if (isMorse) {
+			option = section.option(form.Value, 'mm_sae_password_url', _('SAE Password URL'));
+			option.placeholder = 'http://server.local/sae-psk';
+			option.rmempty = true;
+			option.readonly = getReadOnly('mm_sae_password_url');
+			option.depends({ mode: 'ap' });
+			option.depends({ mode: 'ap-wds' });
+			option.depends({ mode: 'mesh' });
+		}
 	},
 
 	renderNetworkInterfaces(map, wirelessMap) {
