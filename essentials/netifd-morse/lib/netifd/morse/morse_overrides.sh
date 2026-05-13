@@ -820,8 +820,13 @@ morse_override_wpa_supplicant_add_network() {
 	}
 
 	[ "$_w_mode" = "mesh" ] && {
+		local gateway_ip
 		json_get_vars mesh_id encryption
 		[ -n "$mesh_id" ] && ssid="${mesh_id}"
+		if [ -z "$mm_sae_password_url" ]; then
+			gateway_ip="$(ip -4 route show default 2>/dev/null | awk '/default via/ { print $3; exit }')"
+			[ -n "$gateway_ip" ] && mm_sae_password_url="http://${gateway_ip}:8088/mac/connect"
+		fi
 		[ -n "$mesh_max_peer_links" ] && append mesh_data "max_peer_links=${mesh_max_peer_links}" "$N"
 		[ -n "$mesh_plink_timeout" ] && append mesh_data "mesh_max_inactivity=${mesh_plink_timeout}" "$N"
 		[ -n "$mesh_fwding" ] && append mesh_data "mesh_fwding=${mesh_fwding}" "$N"
@@ -847,6 +852,7 @@ morse_override_wpa_supplicant_add_network() {
 		[ -n "$mesh_dynamic_peering" ] && append network_data "mesh_dynamic_peering=${mesh_dynamic_peering}" "$N$T"
 		[ -n "$mesh_rssi_margin" ] && append network_data "mesh_rssi_margin=${mesh_rssi_margin}" "$N$T"
 		[ -n "$mesh_blacklist_timeout" ] && append network_data "mesh_blacklist_timeout=${mesh_blacklist_timeout}" "$N$T"
+		[ -n "$mm_sae_password_url" ] && append network_data "mm_sae_password_url=$mm_sae_password_url" "$N$T"
 
 		[ "$encryption" = "none" -o -z "$encryption" ] || append wpa_key_mgmt "SAE"
 		scan_ssid=""
@@ -885,7 +891,11 @@ morse_override_wpa_supplicant_add_network() {
 			key_mgmt="$wpa_key_mgmt"
 
 			if [ "$_w_mode" = "mesh" ] || [ "$auth_type" = "sae" ]; then
-				passphrase="sae_password=\"${key}\""
+				if [ "$_w_mode" = "mesh" ] && [ -n "$mm_sae_password_url" ] && [ -z "$key" ]; then
+					passphrase=""
+				else
+					passphrase="sae_password=\"${key}\""
+				fi
 			else
 				if [ ${#key} -eq 64 ]; then
 					passphrase="psk=${key}"
@@ -893,7 +903,7 @@ morse_override_wpa_supplicant_add_network() {
 					passphrase="psk=\"${key}\""
 				fi
 			fi
-			append network_data "$passphrase" "$N$T"
+			[ -n "$passphrase" ] && append network_data "$passphrase" "$N$T"
 		;;
 		eap|eap2|eap192)
 			hostapd_append_wpa_key_mgmt
